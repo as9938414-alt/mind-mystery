@@ -19,7 +19,8 @@ export type GameMode =
   | 'surprise_me'
   | 'number_reader'
   | 'double_challenge'
-  | 'ultimate_challenge';
+  | 'ultimate_challenge'
+  | 'crystal_ball';
 
 export type RiddleCategoryId =
   | 'politics'
@@ -125,7 +126,7 @@ export const PREDICTION_CATEGORIES: CategoryDefinition[] = [
   },
   {
     id: 'alphabet',
-    name: 'Favourite Alphabet',
+    name: 'Favourite Letter',
     shortDesc: 'Vowels, consonants, letter geometry, and alphabetical zones.',
     strategyHint: 'Eliminates A–Z via half-splits, vowel checks, stroke symmetry, and frequency.',
     samplePrompt: 'Hold a single letter from A to Z in your mind.',
@@ -138,6 +139,34 @@ export const PREDICTION_CATEGORIES: CategoryDefinition[] = [
     samplePrompt: 'Think of a word whose sound or meaning you love.',
   },
 ];
+
+/** Sub-pools for the offline Oracle engine (picking one narrows the field before the first question). */
+export const CATEGORY_INDUSTRIES: Partial<Record<PredictionCategoryId, string[]>> = {
+  movie: ['Bollywood', 'Hollywood', 'Tollywood', 'Kollywood', 'Mollywood/Sandalwood', 'Korean', 'Web Series', 'Anime'],
+  actor: ['Bollywood', 'Hollywood', 'Tollywood', 'Kollywood', 'Mollywood/Sandalwood', 'Korean', 'Web Series', 'Anime'],
+  song: [
+    'Bollywood (Hindi)',
+    'Hollywood (English)',
+    'Tollywood (Telugu)',
+    'Kollywood (Tamil)',
+    'Mollywood/Sandalwood',
+    'Korean (K-Pop)',
+    'Web Series OST',
+    'Anime OST',
+  ],
+  singer: [
+    'Bollywood (Hindi)',
+    'Hollywood (English)',
+    'Tollywood (Telugu)',
+    'Kollywood (Tamil)',
+    'Mollywood/Sandalwood',
+    'Korean (K-Pop)',
+    'Independent / Global',
+    'Anime / J-Pop',
+  ],
+  sports_person: ['Cricket', 'Football', 'Tennis', 'Basketball', 'Athletics & Olympics', 'Combat & Motorsport'],
+  dob: ['Any / Skip Birth Year', '1960–1989', '1990–2004', '2005–2020'],
+};
 
 export interface RiddleCategoryDefinition {
   id: RiddleCategoryId;
@@ -235,6 +264,12 @@ export interface QuestionPayload {
   aiInsight?: string;
   signalStrength: number; // 0-95 honest leading signal strength
   remainingEstimate?: string;
+  /** Present for the deterministic Magic Cards rounds (number / alphabet). */
+  card?: {
+    kind: 'number' | 'alphabet';
+    items: string[];
+    columns: number;
+  };
 }
 
 export interface PredictionResult {
@@ -246,6 +281,11 @@ export interface PredictionResult {
   honestyNote?: string;
   visualAccent?: string; // e.g., hex colour for Colour category
   detectedCategory?: PredictionCategoryId;
+  /** Subtitle for the guess (e.g. "2009 · Bollywood · Aamir Khan"). */
+  subtitle?: string;
+  posterUrl?: string | null;
+  runnersUp?: string[];
+  engine?: 'cards' | 'oracle' | 'ai';
 }
 
 export interface MindSessionState {
@@ -269,6 +309,20 @@ export interface MindSessionState {
   status: 'questioning' | 'ready_to_reveal' | 'revealed' | 'completed';
   currentQuestion: QuestionPayload | null;
   prediction: PredictionResult | null;
+  /** How many more "let me try again" retries the AI gets after a wrong guess. */
+  attemptsLeft: number;
+  rejectedGuesses: string[];
+  industry?: string | null;
+  engine?: 'cards' | 'oracle' | 'ai';
+}
+
+export interface HealthStatus {
+  ok: boolean;
+  oracleCandidates?: number;
+  aiConfigured: boolean;
+  aiReachable: boolean | null;
+  aiMessage?: string;
+  model: string;
 }
 
 export interface RiddleQuestion {

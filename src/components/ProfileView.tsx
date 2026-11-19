@@ -69,7 +69,7 @@ export function ProfileView({
         {/* Identity & Preferences Card */}
         <form
           onSubmit={handleSave}
-          className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-6 space-y-5"
+          className="lg:col-span-5 rounded-2xl mm-glass p-6 space-y-5"
         >
           <div className="flex items-center gap-4">
             <div
@@ -127,7 +127,7 @@ export function ProfileView({
             <button
               type="submit"
               disabled={saving}
-              className="rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 px-5 py-2.5 text-xs font-semibold text-white transition-colors"
+              className="rounded-xl mm-btn-primary disabled:opacity-60 px-5 py-2.5 text-xs font-semibold text-white transition-colors"
             >
               {saving ? 'Saving...' : savedNotice ? 'Profile Saved' : 'Save Profile'}
             </button>
@@ -156,25 +156,25 @@ export function ProfileView({
         {/* Stats & Recent Activity */}
         <div className="lg:col-span-7 space-y-6">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-4">
+            <div className="rounded-xl mm-glass p-4">
               <p className="text-xs text-slate-500 dark:text-slate-400">Mind Read Rate</p>
               <p className="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
                 {accuracyPct}%
               </p>
             </div>
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-4">
+            <div className="rounded-xl mm-glass p-4">
               <p className="text-xs text-slate-500 dark:text-slate-400">Riddles Solved</p>
               <p className="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
                 {userStats?.riddlesSolved ?? 0}
               </p>
             </div>
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-4">
+            <div className="rounded-xl mm-glass p-4">
               <p className="text-xs text-slate-500 dark:text-slate-400">Badges Earned</p>
               <p className="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
                 {userStats?.badges.length ?? 0}/{BADGE_DEFINITIONS.length}
               </p>
             </div>
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-4">
+            <div className="rounded-xl mm-glass p-4">
               <p className="text-xs text-slate-500 dark:text-slate-400">Current Streak</p>
               <p className="mt-1 font-display text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
                 {userStats?.currentStreak ?? 0}
@@ -182,7 +182,7 @@ export function ProfileView({
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-6 space-y-4">
+          <div className="rounded-2xl mm-glass p-6 space-y-4">
             <h3 className="font-display text-base font-semibold text-slate-900 dark:text-white">
               Recent Sessions
             </h3>
@@ -209,7 +209,7 @@ export function ProfileView({
           </div>
 
           {userStats && Object.keys(userStats.categoryStats).length > 0 && (
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-6 space-y-3">
+            <div className="rounded-2xl mm-glass p-6 space-y-3">
               <h3 className="font-display text-base font-semibold text-slate-900 dark:text-white">
                 Category Breakdown
               </h3>

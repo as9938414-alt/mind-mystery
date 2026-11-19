@@ -1,5 +1,6 @@
 import {
   GameMode,
+  HealthStatus,
   LeaderboardEntry,
   MindSessionState,
   PredictionCategoryId,
@@ -12,21 +13,61 @@ import {
 
 const USER_ID_STORAGE_KEY = 'mindmystery_user_id';
 
+let memoryUserId: string | null = null;
+
+function newUserId() {
+  return `usr_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function getClientUserId(): string {
   if (typeof window === 'undefined') return 'default_challenger';
-  let id = localStorage.getItem(USER_ID_STORAGE_KEY);
-  if (!id) {
-    id = `usr_${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    let id = localStorage.getItem(USER_ID_STORAGE_KEY);
+    if (!id) {
+      id = newUserId();
+      localStorage.setItem(USER_ID_STORAGE_KEY, id);
+    }
+    return id;
+  } catch {
+    memoryUserId = memoryUserId ?? newUserId();
+    return memoryUserId;
+  }
+}
+
+/** Booth mode: hand the device to the next visitor with a fresh profile. */
+export function startNewPlayer(): string {
+  const id = newUserId();
+  memoryUserId = id;
+  try {
     localStorage.setItem(USER_ID_STORAGE_KEY, id);
+  } catch {
+    /* storage blocked — memory id is used */
   }
   return id;
 }
 
-async function apiRequest<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
+export async function fetchHealth(): Promise<HealthStatus> {
+  return apiRequest<HealthStatus>('/api/health');
+}
+
+export async function continueMindAfterMiss(sessionId: string): Promise<MindSessionState> {
+  const data = await apiRequest<{ session: MindSessionState }>('/api/mind/continue', {
+    method: 'POST',
+    body: JSON.stringify({ sessionId }),
   });
+  return data.session;
+}
+
+async function apiRequest<T>(url: string, options?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+    });
+  } catch {
+    throw new Error('Lost connection to the MindMystery server. Check the Wi-Fi and try again.');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data.error || `Request failed (${res.status})`);
@@ -60,6 +101,7 @@ export async function fetchLeaderboard(timeframe: 'daily' | 'weekly' | 'alltime'
 export async function startMindGame(params: {
   mode: GameMode;
   category?: PredictionCategoryId;
+  industry?: string | null;
   numberRange?: { min: number; max: number };
 }): Promise<MindSessionState> {
   const userId = getClientUserId();

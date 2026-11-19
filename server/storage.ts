@@ -56,68 +56,10 @@ function getWeekKey(date = new Date()): string {
 }
 
 function createInitialDb(): StoredDb {
-  const today = getDayKey();
-  const week = getWeekKey();
-
-  const seedPlayers = [
-    {
-      userId: 'challenger_aanya',
-      name: 'Aanya Verma',
-      avatarAccent: '#6366F1',
-      dailyPoints: 210,
-      weeklyPoints: 740,
-      allTimePoints: 2480,
-      correctPredictions: 18,
-      riddlesSolved: 31,
-      currentStreak: 5,
-    },
-    {
-      userId: 'challenger_marcus',
-      name: 'Marcus Chen',
-      avatarAccent: '#0EA5E9',
-      dailyPoints: 165,
-      weeklyPoints: 620,
-      allTimePoints: 1990,
-      correctPredictions: 14,
-      riddlesSolved: 24,
-      currentStreak: 3,
-    },
-    {
-      userId: 'challenger_elena',
-      name: 'Elena Rostova',
-      avatarAccent: '#8B5CF6',
-      dailyPoints: 140,
-      weeklyPoints: 510,
-      allTimePoints: 1640,
-      correctPredictions: 12,
-      riddlesSolved: 19,
-      currentStreak: 4,
-    },
-    {
-      userId: 'challenger_kabir',
-      name: 'Kabir Mehta',
-      avatarAccent: '#3B82F6',
-      dailyPoints: 95,
-      weeklyPoints: 390,
-      allTimePoints: 1210,
-      correctPredictions: 9,
-      riddlesSolved: 15,
-      currentStreak: 2,
-    },
-  ];
-
-  const leaderboard: StoredDb['leaderboard'] = {};
-  for (const p of seedPlayers) {
-    leaderboard[p.userId] = {
-      ...p,
-      lastDailyReset: today,
-      lastWeeklyReset: week,
-    };
-  }
-
+  // Leaderboard starts empty so it only ever shows real players (no fake seed data at a live event).
   return {
     users: {},
-    leaderboard,
+    leaderboard: {},
     learnedCorrections: [],
   };
 }
@@ -404,11 +346,12 @@ export function getLeaderboard(
     };
   });
 
-  list.sort((a, b) => {
+  const visible = list.filter((e) => e.allTimePoints > 0 || e.isCurrentUser);
+  visible.sort((a, b) => {
     if (timeframe === 'daily') return b.dailyPoints - a.dailyPoints || b.allTimePoints - a.allTimePoints;
     if (timeframe === 'weekly') return b.weeklyPoints - a.weeklyPoints || b.allTimePoints - a.allTimePoints;
     return b.allTimePoints - a.allTimePoints;
   });
 
-  return list.slice(0, 20);
+  return visible.slice(0, 20);
 }

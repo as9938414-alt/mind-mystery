@@ -71,6 +71,45 @@ class SoundController {
     this.playTone(220, 0.24, 'sine', 0.05, 0.12);
   }
 
+  /** ~2.6s rising "the machine is thinking" build-up before a reveal. */
+  playRevealBuild() {
+    const ctx = this.getContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(110, now);
+    osc.frequency.exponentialRampToValueAtTime(880, now + 2.6);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.025, now + 0.4);
+    gain.gain.exponentialRampToValueAtTime(0.045, now + 2.4);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 2.65);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(600, now);
+    filter.frequency.exponentialRampToValueAtTime(3200, now + 2.6);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 2.7);
+    // heartbeat ticks that speed up
+    [0, 0.6, 1.1, 1.5, 1.8, 2.05, 2.25, 2.4].forEach((t) => this.playTone(70, 0.12, 'sine', 0.08, t));
+  }
+
+  /** Big shimmering chord for the moment of reveal. */
+  playReveal() {
+    [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => this.playTone(f, 1.1, 'sine', 0.05, i * 0.04));
+    this.playTone(130.81, 1.2, 'triangle', 0.08, 0);
+  }
+
+  /** Card flip whoosh. */
+  playFlip() {
+    this.playTone(1200, 0.05, 'triangle', 0.02);
+    this.playTone(900, 0.06, 'triangle', 0.02, 0.03);
+  }
+
   playTick() {
     this.playTone(880, 0.04, 'sine', 0.025);
   }

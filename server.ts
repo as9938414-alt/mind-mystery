@@ -1,17 +1,20 @@
 import 'dotenv/config';
 import express, { NextFunction, Request, Response } from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { GeminiServiceError } from './server/gemini.ts';
+import { GEMINI_MODEL, GeminiServiceError, checkGeminiHealth, isGeminiConfigured } from './server/gemini.ts';
 import {
   advanceNextRound,
+  continueAfterMiss,
   getMindSession,
   recordPredictionFeedback,
   startMindSession,
   submitMindAnswer,
 } from './server/mindEngine.ts';
+import { oracleStats } from './server/oracle/pools.ts';
 import { evaluateRiddleAnswer, generateRiddle } from './server/riddleEngine.ts';
 import {
   getLeaderboard,
@@ -30,7 +33,20 @@ async function bootstrap() {
 
   const api = express.Router();
 
-  // Health & User Profile
+  // Health (booth operator status light)
+  api.get('/health', async (req: Request, res: Response) => {
+    const health = await checkGeminiHealth(req.query.force === '1');
+    res.json({
+      ok: true,
+      aiConfigured: isGeminiConfigured(),
+      aiReachable: health.reachable,
+      aiMessage: health.message,
+      oracleCandidates: oracleStats().candidates,
+      model: GEMINI_MODEL,
+    });
+  });
+
+  // User Profile
   api.get('/profile', (req: Request, res: Response) => {
     const userId = String(req.query.userId || 'default_challenger');
     const user = getOrCreateUser(userId);
@@ -56,11 +72,17 @@ async function bootstrap() {
   // Mind Reader Engine
   api.post('/mind/start', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { userId = 'default_challenger', mode = 'mind_reader', category, numberRange } = req.body ?? {};
+      const { userId = 'default_challenger', mode = 'mind_reader', category, industry, numberRange } = req.body ?? {};
+      const allowedModes: GameMode[] = ['mind_reader', 'surprise_me', 'number_reader', 'double_challenge', 'ultimate_challenge'];
+      if (!allowedModes.includes(mode)) {
+        res.status(400).json({ error: 'Unknown game mode.' });
+        return;
+      }
       const session = await startMindSession({
         userId: String(userId),
         mode: mode as GameMode,
         category: category as PredictionCategoryId | undefined,
+        industry: typeof industry === 'string' ? industry : null,
         numberRange,
       });
       res.json({ session });
@@ -96,6 +118,10 @@ async function bootstrap() {
         res.status(404).json({ error: 'Prediction session not found or already closed.' });
         return;
       }
+      if (internal.status !== 'ready_to_reveal') {
+        res.status(409).json({ error: 'This round has already been scored.' });
+        return;
+      }
 
       const predSnapshot = { ...internal.prediction };
       const resolvedCat = predSnapshot.detectedCategory ?? internal.resolvedCategory;
@@ -122,6 +148,20 @@ async function bootstrap() {
         pointsAwarded: statsOutcome.pointsAwarded,
         newBadges: statsOutcome.newBadges,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  api.post('/mind/continue', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { sessionId } = req.body ?? {};
+      if (!sessionId) {
+        res.status(400).json({ error: 'sessionId is required.' });
+        return;
+      }
+      const session = await continueAfterMiss(String(sessionId));
+      res.json({ session });
     } catch (err) {
       next(err);
     }
@@ -210,10 +250,12 @@ async function bootstrap() {
 
   app.use('/api', api);
 
+  const httpServer = http.createServer(app);
   const isProd = process.env.NODE_ENV === 'production';
   if (!isProd) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      // Attach HMR to the same HTTP server/port so live reload works behind one port.
+      server: { middlewareMode: true, hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer } },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -231,7 +273,7 @@ async function bootstrap() {
   }
 
   const PORT = Number(process.env.PORT) || 3000;
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`MindMystery server running on http://0.0.0.0:${PORT}`);
   });
 }

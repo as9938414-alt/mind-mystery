@@ -7,7 +7,34 @@ import {
   RiddleQuestion,
 } from '../src/types.ts';
 import { generateStructuredJson } from './gemini.ts';
+import { RIDDLE_BANK } from './riddleBank.ts';
 import { recordRiddleResult } from './storage.ts';
+
+type RiddleData = {
+  subtopic: string;
+  question: string;
+  options: string[];
+  correctIndex: number;
+  hint: string;
+  explanation: string;
+};
+
+function pickBankRiddle(category: RiddleCategoryId, excludes: string[]): RiddleData {
+  const bank = RIDDLE_BANK[category] ?? RIDDLE_BANK.general;
+  const fresh = bank.filter((r) => !excludes.includes(r.question));
+  const pool = fresh.length > 0 ? fresh : bank;
+  const r = pool[Math.floor(Math.random() * pool.length)];
+  // Shuffle options so repeat visitors don't memorise positions.
+  const order = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
+  return {
+    subtopic: r.subtopic,
+    question: r.question,
+    options: order.map((i) => r.options[i]),
+    correctIndex: order.indexOf(r.correctIndex),
+    hint: r.hint,
+    explanation: r.explanation,
+  };
+}
 
 interface StoredRiddle extends RiddleQuestion {
   correctIndex: number;
@@ -44,7 +71,8 @@ export async function generateRiddle(params: {
   excludeQuestions?: string[];
 }): Promise<RiddleQuestion> {
   const cat = RIDDLE_CATEGORIES.find((c) => c.id === params.category) ?? RIDDLE_CATEGORIES[0];
-  const meta = DIFFICULTY_META[params.difficulty];
+  const difficulty: RiddleDifficulty = DIFFICULTY_META[params.difficulty] ? params.difficulty : 'Medium';
+  const meta = DIFFICULTY_META[difficulty];
   const randomTopic = cat.topics[Math.floor(Math.random() * cat.topics.length)];
   const excludes = (params.excludeQuestions ?? []).slice(-12);
 
@@ -52,28 +80,30 @@ export async function generateRiddle(params: {
 Generate ONE high-quality, engaging, factually accurate riddle or brain challenge with 4 distinct multiple-choice options.
 Rules:
 1. Domain: ${cat.name} (topics: ${cat.topics.join(', ')}). Focus on "${randomTopic}".
-2. Difficulty: ${params.difficulty}.
+2. Difficulty: ${difficulty}.
 3. For Politics & Governance and General Knowledge: Use verified, factual, and strictly politically neutral information. Never take partisan stances.
 4. Ensure exactly ONE unambiguously correct option among the 4 choices (correctIndex 0..3).
 5. Provide a clever, non-spoiler hint and a clear 1–2 sentence factual explanation.
 6. NEVER repeat any question listed in the excluded list.`;
 
-  const prompt = `Create a fresh ${params.difficulty} challenge in "${cat.name}" (focus area: ${randomTopic}).
+  const prompt = `Create a fresh ${difficulty} challenge in "${cat.name}" (focus area: ${randomTopic}).
 ${excludes.length > 0 ? `Do NOT repeat or closely paraphrase these already-asked questions:\n${excludes.map((q) => `- ${q}`).join('\n')}` : ''}`;
 
-  const data = await generateStructuredJson<{
-    subtopic: string;
-    question: string;
-    options: string[];
-    correctIndex: number;
-    hint: string;
-    explanation: string;
-  }>({
-    systemInstruction,
-    prompt,
-    schema: RIDDLE_SCHEMA,
-    thinkingLevel: ThinkingLevel.LOW,
-  });
+  let data: RiddleData;
+  try {
+    data = await generateStructuredJson<RiddleData>({
+      systemInstruction,
+      prompt,
+      schema: RIDDLE_SCHEMA,
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+    if (!data?.question || !Array.isArray(data.options) || data.options.length < 4) {
+      throw new Error('Incomplete riddle from AI');
+    }
+  } catch {
+    // Offline / quota / bad output: fall back to the hand-checked bank so the booth never stalls.
+    data = pickBankRiddle(cat.id, params.excludeQuestions ?? []);
+  }
 
   const safeOptions = (data.options ?? []).slice(0, 4);
   while (safeOptions.length < 4) {
@@ -85,7 +115,7 @@ ${excludes.length > 0 ? `Do NOT repeat or closely paraphrase these already-asked
   const stored: StoredRiddle = {
     id,
     category: cat.id,
-    difficulty: params.difficulty,
+    difficulty,
     subtopic: data.subtopic || randomTopic,
     question: data.question,
     options: safeOptions,

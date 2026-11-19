@@ -1,4 +1,4 @@
-import { Menu, X } from 'lucide-react';
+import { Menu, UserPlus, X } from 'lucide-react';
 import { useState } from 'react';
 
 export type ActiveTab = 'home' | 'mind_reader' | 'brain_arena' | 'leaderboard' | 'profile';
@@ -7,6 +7,25 @@ interface NavbarProps {
   activeTab: ActiveTab;
   onNavigate: (tab: ActiveTab) => void;
   onQuickStart: () => void;
+  onNewPlayer: () => void;
+  playerName?: string;
+  aiReady: boolean | null;
+  aiMessage?: string;
+}
+
+function AiStatusDot({ aiReady, aiMessage }: { aiReady: boolean | null; aiMessage?: string }) {
+  // Every game works offline; the AI only adds extra reach when a guess misses.
+  const label = aiReady === null ? 'Connecting…' : aiReady ? 'AI boost on' : 'Offline mode';
+  const color = aiReady === null ? 'bg-slate-400' : aiReady ? 'bg-emerald-500' : 'bg-sky-400';
+  return (
+    <span
+      title={aiReady === false && aiMessage ? aiMessage : label}
+      className="hidden lg:inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap"
+    >
+      <span className={`w-2 h-2 rounded-full ${color} ${aiReady ? 'animate-pulse' : ''}`} />
+      {label}
+    </span>
+  );
 }
 
 const NAV_ITEMS: Array<{ id: ActiveTab; label: string }> = [
@@ -17,7 +36,7 @@ const NAV_ITEMS: Array<{ id: ActiveTab; label: string }> = [
   { id: 'profile', label: 'Profile' },
 ];
 
-export function Navbar({ activeTab, onNavigate, onQuickStart }: NavbarProps) {
+export function Navbar({ activeTab, onNavigate, onQuickStart, onNewPlayer, playerName, aiReady, aiMessage }: NavbarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const handleSelect = (tab: ActiveTab) => {
@@ -26,7 +45,7 @@ export function Navbar({ activeTab, onNavigate, onQuickStart }: NavbarProps) {
   };
 
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-200 dark:border-slate-800/80 bg-white/85 dark:bg-[#070B16]/85 backdrop-blur-md">
+    <header className="sticky top-0 z-40 border-b border-slate-200 dark:border-slate-800/80 bg-white/70 dark:bg-[#070B1A]/70 backdrop-blur-xl">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-8 px-4 sm:px-6 h-14 sm:h-16">
         {/* Zone 1: Single-element brand wordmark */}
         <button
@@ -34,7 +53,7 @@ export function Navbar({ activeTab, onNavigate, onQuickStart }: NavbarProps) {
           onClick={() => handleSelect('home')}
           className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-md"
         >
-          MindMystery
+          Mind<span className="mm-gradient-text">Mystery</span>
         </button>
 
         {/* Zone 2: 5 concise single-line navigation links */}
@@ -63,10 +82,20 @@ export function Navbar({ activeTab, onNavigate, onQuickStart }: NavbarProps) {
 
         {/* Zone 3: 1 primary action + mobile drawer trigger */}
         <div className="flex items-center gap-3 shrink-0">
+          <AiStatusDot aiReady={aiReady} aiMessage={aiMessage} />
+          <button
+            type="button"
+            onClick={onNewPlayer}
+            title={playerName ? `Playing as ${playerName}` : 'Start a fresh player'}
+            className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap"
+          >
+            <UserPlus className="w-3.5 h-3.5" />
+            New Player
+          </button>
           <button
             type="button"
             onClick={onQuickStart}
-            className="hidden sm:inline-flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-500 px-4 py-2 text-xs font-semibold text-white transition-colors duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+            className="hidden sm:inline-flex items-center justify-center rounded-lg mm-btn-primary px-4 py-2 text-xs font-semibold text-white transition-colors duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
           >
             Start Reading
           </button>
@@ -103,14 +132,24 @@ export function Navbar({ activeTab, onNavigate, onQuickStart }: NavbarProps) {
               </button>
             );
           })}
-          <div className="pt-2">
+          <div className="pt-2 space-y-2">
+            <button
+              type="button"
+              onClick={() => {
+                setMobileOpen(false);
+                onNewPlayer();
+              }}
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-700 dark:text-slate-200"
+            >
+              New Player
+            </button>
             <button
               type="button"
               onClick={() => {
                 setMobileOpen(false);
                 onQuickStart();
               }}
-              className="w-full rounded-lg bg-indigo-600 hover:bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white"
+              className="w-full rounded-lg mm-btn-primary px-4 py-2.5 text-sm font-semibold text-white"
             >
               Start Reading
             </button>

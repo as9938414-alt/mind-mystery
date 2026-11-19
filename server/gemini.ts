@@ -1,6 +1,12 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
-export const GEMINI_MODEL = 'gemini-4-hydrogen';
+export const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-4-hydrogen';
+const REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 25000;
+
+export function isGeminiConfigured(): boolean {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  return Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
+}
 
 let cachedClient: GoogleGenAI | null = null;
 
@@ -8,7 +14,7 @@ export function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     throw new GeminiServiceError(
-      'GEMINI_API_KEY is not configured. Please add your Gemini API key in Settings > Secrets.',
+      'The AI engine is offline (no GEMINI_API_KEY). The Number and Letter readers and the Crystal Ball still work.',
       503,
       'API_KEY_MISSING'
     );
@@ -17,6 +23,8 @@ export function getGeminiClient(): GoogleGenAI {
     cachedClient = new GoogleGenAI({
       apiKey,
       httpOptions: {
+        timeout: REQUEST_TIMEOUT_MS,
+        ...(process.env.GEMINI_BASE_URL ? { baseUrl: process.env.GEMINI_BASE_URL } : {}),
         headers: {
           'User-Agent': 'aistudio-build',
         },
@@ -43,7 +51,7 @@ function mapGeminiError(err: unknown): GeminiServiceError {
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
 
-  if (lower.includes('api_key_invalid') || lower.includes('permission_denied') || lower.includes('403')) {
+  if (lower.includes('api_key_invalid') || lower.includes('api key not valid') || lower.includes('permission_denied') || lower.includes('403')) {
     return new GeminiServiceError(
       'Gemini API authentication failed. Please verify your API key in Settings > Secrets.',
       403,
@@ -78,7 +86,7 @@ export async function generateStructuredJson<T>(params: {
   thinkingLevel?: ThinkingLevel;
 }): Promise<T> {
   const ai = getGeminiClient();
-  const maxAttempts = 3;
+  const maxAttempts = 2;
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -100,7 +108,9 @@ export async function generateStructuredJson<T>(params: {
       if (!text) {
         throw new GeminiServiceError('AI returned an empty structured response.', 502, 'EMPTY_RESPONSE');
       }
-      return JSON.parse(text) as T;
+      const parsed = JSON.parse(text) as T;
+      lastHealth = { reachable: true, message: undefined, checkedAt: Date.now() };
+      return parsed;
     } catch (err) {
       lastError = err;
       const mapped = mapGeminiError(err);
@@ -114,5 +124,34 @@ export async function generateStructuredJson<T>(params: {
     }
   }
 
-  throw mapGeminiError(lastError);
+  const finalError = mapGeminiError(lastError);
+  lastHealth = { reachable: false, message: finalError.message, checkedAt: Date.now() };
+  throw finalError;
+}
+
+let lastHealth: { reachable: boolean | null; message?: string; checkedAt: number } = {
+  reachable: null,
+  checkedAt: 0,
+};
+
+/** Cheap live check (cached for 60s) so the booth operator can see whether the AI is reachable. */
+export async function checkGeminiHealth(force = false): Promise<{ reachable: boolean | null; message?: string }> {
+  if (!isGeminiConfigured()) {
+    return { reachable: false, message: 'GEMINI_API_KEY is not set.' };
+  }
+  if (!force && Date.now() - lastHealth.checkedAt < 60_000) {
+    return { reachable: lastHealth.reachable, message: lastHealth.message };
+  }
+  try {
+    const ai = getGeminiClient();
+    await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: 'Reply with the single word: ok',
+      config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+    });
+    lastHealth = { reachable: true, checkedAt: Date.now() };
+  } catch (err) {
+    lastHealth = { reachable: false, message: mapGeminiError(err).message, checkedAt: Date.now() };
+  }
+  return { reachable: lastHealth.reachable, message: lastHealth.message };
 }

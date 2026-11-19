@@ -75,7 +75,7 @@ export function LeaderboardView({ userStats }: LeaderboardViewProps) {
       </div>
 
       {/* Leaderboard Table */}
-      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] overflow-hidden">
+      <div className="rounded-2xl mm-glass overflow-hidden">
         {error ? (
           <div className="p-6 flex items-center justify-between gap-4 text-sm text-rose-600 dark:text-rose-400">
             <span>{error}</span>
@@ -185,7 +185,7 @@ export function LeaderboardView({ userStats }: LeaderboardViewProps) {
                 className={`rounded-xl border p-5 flex items-start gap-4 ${
                   unlocked
                     ? 'border-indigo-500/50 bg-indigo-50/40 dark:bg-indigo-500/10'
-                    : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] opacity-80'
+                    : 'border-slate-200 dark:border-slate-800 mm-glass opacity-80'
                 }`}
               >
                 <div

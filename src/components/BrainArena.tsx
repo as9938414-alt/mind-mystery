@@ -56,6 +56,8 @@ export function BrainArena({
 
   const askedHistoryRef = useRef<string[]>([]);
   const timerRef = useRef<number | null>(null);
+  // Guards against the timer expiring at the same moment the player taps Submit.
+  const answeredRef = useRef<string | null>(null);
 
   useEffect(() => {
     setCategory(initialCategory);
@@ -106,7 +108,8 @@ export function BrainArena({
   }, [riddle?.id, evaluation, loading]);
 
   const handleTimeoutSubmission = async (riddleId: string) => {
-    if (submitting || evaluation) return;
+    if (answeredRef.current === riddleId) return;
+    answeredRef.current = riddleId;
     setSubmitting(true);
     try {
       const res = await submitArenaRiddleAnswer({
@@ -152,6 +155,12 @@ export function BrainArena({
 
   const handleSubmit = async () => {
     if (!riddle || selectedIndex === null || submitting || evaluation) return;
+    if (answeredRef.current === riddle.id) return;
+    answeredRef.current = riddle.id;
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
     setSubmitting(true);
     setError(null);
 
@@ -177,6 +186,7 @@ export function BrainArena({
         soundFx.playMiss();
       }
     } catch (err) {
+      answeredRef.current = null;
       setError(err instanceof Error ? err.message : 'Unable to evaluate your answer.');
     } finally {
       setSubmitting(false);
@@ -211,7 +221,7 @@ export function BrainArena({
       </div>
 
       {/* Category & Difficulty Controls */}
-      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-5 sm:p-6 space-y-5">
+      <div className="rounded-2xl mm-glass p-5 sm:p-6 space-y-5">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           {RIDDLE_CATEGORIES.map((cat) => {
             const active = category === cat.id;
@@ -296,7 +306,7 @@ export function BrainArena({
 
       {/* Loading Skeleton */}
       {loading && (
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-8 flex items-center justify-center gap-3 text-sm text-slate-600 dark:text-slate-300">
+        <div className="rounded-2xl mm-glass p-8 flex items-center justify-center gap-3 text-sm text-slate-600 dark:text-slate-300">
           <Loader2 className="w-5 h-5 animate-spin text-violet-500" />
           <span>Crafting a verified {difficulty} {activeCatDef.name} challenge...</span>
         </div>
@@ -304,7 +314,7 @@ export function BrainArena({
 
       {/* Active Riddle Stage */}
       {!loading && riddle && (
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0C1222] p-6 sm:p-8 space-y-6">
+        <div className="rounded-2xl mm-glass p-6 sm:p-8 space-y-6">
           {/* Metadata + Countdown Timer */}
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
