@@ -314,6 +314,8 @@ export interface MindSessionState {
   rejectedGuesses: string[];
   industry?: string | null;
   engine?: 'cards' | 'oracle' | 'ai';
+  /** Encrypted game state; sent back with every request so any server instance can continue. */
+  token?: string;
 }
 
 export interface HealthStatus {
@@ -335,6 +337,7 @@ export interface RiddleQuestion {
   hint: string;
   timeLimitSeconds: number;
   basePoints: number;
+  token?: string;
 }
 
 export interface RiddleEvaluation {

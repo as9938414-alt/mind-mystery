@@ -8,6 +8,7 @@ import {
 } from '../src/types.ts';
 import { generateStructuredJson } from './gemini.ts';
 import { RIDDLE_BANK } from './riddleBank.ts';
+import { open, seal } from './sealedState.ts';
 import { recordRiddleResult } from './storage.ts';
 
 type RiddleData = {
@@ -42,6 +43,8 @@ interface StoredRiddle extends RiddleQuestion {
 }
 
 const activeRiddles = new Map<string, StoredRiddle>();
+// Best-effort replay guard (per instance) so one riddle can't be scored twice.
+const answeredRiddles = new Set<string>();
 
 const DIFFICULTY_META: Record<RiddleDifficulty, { basePoints: number; timeLimitSeconds: number }> = {
   Easy: { basePoints: 15, timeLimitSeconds: 30 },
@@ -139,6 +142,7 @@ ${excludes.length > 0 ? `Do NOT repeat or closely paraphrase these already-asked
     hint: stored.hint,
     timeLimitSeconds: stored.timeLimitSeconds,
     basePoints: stored.basePoints,
+    token: seal({ ...stored, issuedAt: Date.now() }),
   };
 }
 
@@ -149,8 +153,16 @@ export function evaluateRiddleAnswer(params: {
   usedHint: boolean;
   secondsRemaining: number;
   timedOut?: boolean;
+  token?: unknown;
 }): RiddleEvaluation & { userStats: ReturnType<typeof recordRiddleResult>['user'] } {
-  const riddle = activeRiddles.get(params.riddleId);
+  let riddle = activeRiddles.get(params.riddleId);
+  if (!riddle && !answeredRiddles.has(params.riddleId)) {
+    // Serverless: the riddle may have been issued by another instance — reopen it from the sealed token.
+    const restored = open<StoredRiddle & { issuedAt: number }>(params.token);
+    if (restored && restored.id === params.riddleId && Date.now() - restored.issuedAt < 60 * 60 * 1000) {
+      riddle = restored;
+    }
+  }
   if (!riddle) {
     throw new Error('Riddle session expired. Please load the next riddle.');
   }
@@ -175,6 +187,8 @@ export function evaluateRiddleAnswer(params: {
 
   // Clean up solved riddle so it cannot be re-submitted for duplicate points
   activeRiddles.delete(params.riddleId);
+  answeredRiddles.add(params.riddleId);
+  if (answeredRiddles.size > 5000) answeredRiddles.clear();
 
   return {
     correct,

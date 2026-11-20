@@ -39,7 +39,12 @@ interface StoredDb {
   learnedCorrections: LearnedCorrection[];
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+// Serverless hosts have a read-only filesystem except /tmp (which is per-instance and temporary).
+const DATA_DIR = process.env.MINDMYSTERY_DATA_DIR
+  ? path.resolve(process.env.MINDMYSTERY_DATA_DIR)
+  : process.env.VERCEL
+    ? '/tmp/mindmystery-data'
+    : path.resolve(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_DIR, 'mindmystery-db.json');
 
 function getDayKey(date = new Date()): string {
@@ -68,8 +73,10 @@ let dbCache: StoredDb | null = null;
 
 function loadDb(): StoredDb {
   if (dbCache) return dbCache;
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  } catch {
+    /* read-only filesystem — run in memory */
   }
   if (!fs.existsSync(DB_PATH)) {
     dbCache = createInitialDb();
@@ -87,12 +94,17 @@ function loadDb(): StoredDb {
 }
 
 function saveDb(db: StoredDb): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const tmpPath = `${DB_PATH}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, DB_PATH);
+  } catch (err) {
+    // Never fail a game because the disk is unavailable; the in-memory copy keeps working.
+    console.warn('[MindMystery] Could not persist data:', err instanceof Error ? err.message : err);
   }
-  const tmpPath = `${DB_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2), 'utf-8');
-  fs.renameSync(tmpPath, DB_PATH);
 }
 
 export function getOrCreateUser(userId: string): UserStats {

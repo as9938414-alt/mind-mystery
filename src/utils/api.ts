@@ -15,6 +15,16 @@ const USER_ID_STORAGE_KEY = 'mindmystery_user_id';
 
 let memoryUserId: string | null = null;
 
+// Latest encrypted state per game / riddle. Sent back on every call so the game continues even if
+// a different serverless instance handles the next request (Vercel).
+const sessionTokens = new Map<string, string>();
+const riddleTokens = new Map<string, string>();
+
+function rememberSession(session: MindSessionState): MindSessionState {
+  if (session.token) sessionTokens.set(session.sessionId, session.token);
+  return session;
+}
+
 function newUserId() {
   return `usr_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -53,9 +63,9 @@ export async function fetchHealth(): Promise<HealthStatus> {
 export async function continueMindAfterMiss(sessionId: string): Promise<MindSessionState> {
   const data = await apiRequest<{ session: MindSessionState }>('/api/mind/continue', {
     method: 'POST',
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({ sessionId, token: sessionTokens.get(sessionId) }),
   });
-  return data.session;
+  return rememberSession(data.session);
 }
 
 async function apiRequest<T>(url: string, options?: RequestInit): Promise<T> {
@@ -109,7 +119,7 @@ export async function startMindGame(params: {
     method: 'POST',
     body: JSON.stringify({ userId, ...params }),
   });
-  return data.session;
+  return rememberSession(data.session);
 }
 
 export async function answerMindQuestion(params: {
@@ -118,9 +128,9 @@ export async function answerMindQuestion(params: {
 }): Promise<MindSessionState> {
   const data = await apiRequest<{ session: MindSessionState }>('/api/mind/answer', {
     method: 'POST',
-    body: JSON.stringify(params),
+    body: JSON.stringify({ ...params, token: sessionTokens.get(params.sessionId) }),
   });
-  return data.session;
+  return rememberSession(data.session);
 }
 
 export async function submitMindFeedback(params: {
@@ -136,18 +146,27 @@ export async function submitMindFeedback(params: {
   newBadges: string[];
 }> {
   const userId = getClientUserId();
-  return apiRequest('/api/mind/feedback', {
+  const res = await apiRequest<{
+    session: MindSessionState;
+    failureAnalysis?: string;
+    hasNextRound: boolean;
+    user: UserStats;
+    pointsAwarded: number;
+    newBadges: string[];
+  }>('/api/mind/feedback', {
     method: 'POST',
-    body: JSON.stringify({ userId, ...params }),
+    body: JSON.stringify({ userId, ...params, token: sessionTokens.get(params.sessionId) }),
   });
+  rememberSession(res.session);
+  return res;
 }
 
 export async function nextMindRound(sessionId: string): Promise<MindSessionState> {
   const data = await apiRequest<{ session: MindSessionState }>('/api/mind/next-round', {
     method: 'POST',
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({ sessionId, token: sessionTokens.get(sessionId) }),
   });
-  return data.session;
+  return rememberSession(data.session);
 }
 
 export async function generateArenaRiddle(params: {
@@ -159,6 +178,7 @@ export async function generateArenaRiddle(params: {
     method: 'POST',
     body: JSON.stringify(params),
   });
+  if (data.riddle.token) riddleTokens.set(data.riddle.id, data.riddle.token);
   return data.riddle;
 }
 
@@ -175,6 +195,6 @@ export async function submitArenaRiddleAnswer(params: {
   const userId = getClientUserId();
   return apiRequest('/api/riddles/answer', {
     method: 'POST',
-    body: JSON.stringify({ userId, ...params }),
+    body: JSON.stringify({ userId, ...params, token: riddleTokens.get(params.riddleId) }),
   });
 }

@@ -26,3 +26,14 @@ No internet is required for any of the above. The dot in the top bar shows **Off
 - Screens idle for 2 minutes return to Home automatically.
 - Presenting to a big room? Start with **Number Reader** (instant, can't fail), then **Crystal Ball**, then a volunteer's **Bollywood movie**.
 - Leaderboard data lives in `data/mindmystery-db.json`; delete it to reset before the event.
+
+## Live link (Vercel)
+**https://mind-mystery.vercel.app** — same app, no install needed (good for phones and a QR code at the booth).
+
+- Deploy again: `vercel deploy --prod` from this folder (build: `npm run vercel-build`, which writes `.vercel/output`).
+- Games run on serverless functions. Each response carries the game state as an encrypted token
+  (`server/sealedState.ts`), so a game survives requests landing on different instances.
+  `SESSION_SECRET` is set in the Vercel project; keep it set.
+- On Vercel the leaderboard lives in temporary per-instance storage and can reset. For a leaderboard
+  that persists, run the booth laptop locally (`npm run booth`) or add a database (e.g. Upstash Redis).
+- Optional: add `GEMINI_API_KEY` / `TMDB_API_KEY` in the Vercel project settings, then redeploy.

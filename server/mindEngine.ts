@@ -28,6 +28,7 @@ import {
   decodeDeck,
   isYesAnswer,
 } from './magicCards.ts';
+import { open, seal } from './sealedState.ts';
 import { getLearnedCorrectionsForCategory, saveLearnedCorrection } from './storage.ts';
 
 interface QAHistoryItem {
@@ -130,7 +131,38 @@ function toPublicState(s: InternalMindSession): MindSessionState {
     rejectedGuesses: s.rejectedGuesses,
     industry: s.industry,
     engine: s.engine,
+    token: sealSession(s),
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Serverless-safe session lookup                                      */
+/* ------------------------------------------------------------------ */
+
+/** Everything except the Oracle pool, which is rebuilt from (category, industry). */
+function sealSession(s: InternalMindSession): string {
+  const { oracle, ...rest } = s;
+  return seal({
+    ...rest,
+    oracle: oracle ? { scores: oracle.scores, asked: oracle.asked, currentAttr: oracle.currentAttr, currentOptions: oracle.currentOptions } : undefined,
+  });
+}
+
+/**
+ * Finds a session in this instance's memory, or reopens it from the sealed token the client sent
+ * (another serverless instance may have handled the previous request).
+ */
+function loadSession(sessionId: string, token?: unknown): InternalMindSession | undefined {
+  // A valid token is the newest state and always wins: this instance's cached copy may be stale
+  // if another instance handled the previous request. The cache is only used without a token.
+  const restored = token === undefined || token === null ? null : open<InternalMindSession>(token);
+  if (!restored || restored.sessionId !== sessionId) return sessions.get(sessionId);
+  if (Date.now() - restored.createdAt > SESSION_TTL_MS) return undefined;
+  if (restored.oracle) {
+    restored.oracle.pool = loadPool(restored.resolvedCategory, restored.industry);
+  }
+  sessions.set(sessionId, restored);
+  return restored;
 }
 
 /* ------------------------------------------------------------------ */
@@ -652,8 +684,8 @@ export async function startMindSession(params: {
   return toPublicState(session);
 }
 
-export async function submitMindAnswer(params: { sessionId: string; answer: string }): Promise<MindSessionState> {
-  const session = sessions.get(params.sessionId);
+export async function submitMindAnswer(params: { sessionId: string; answer: string; token?: unknown }): Promise<MindSessionState> {
+  const session = loadSession(params.sessionId, params.token);
   if (!session) {
     throw new Error('Session not found or expired. Please start a new Mind Reading session.');
   }
@@ -719,8 +751,8 @@ export async function submitMindAnswer(params: { sessionId: string; answer: stri
 }
 
 /** After a wrong AI guess: ask a few more sharp questions and guess again (Akinator-style). */
-export async function continueAfterMiss(sessionId: string): Promise<MindSessionState> {
-  const session = sessions.get(sessionId);
+export async function continueAfterMiss(sessionId: string, token?: unknown): Promise<MindSessionState> {
+  const session = loadSession(sessionId, token);
   if (!session || !session.prediction) throw new Error('Session not found or expired.');
   if (session.deck) throw new Error('The magic cards round cannot be retried — start a new one.');
   if (session.status !== 'ready_to_reveal') return toPublicState(session);
@@ -830,8 +862,9 @@ export async function recordPredictionFeedback(params: {
   sessionId: string;
   correct: boolean;
   actualAnswer?: string;
+  token?: unknown;
 }): Promise<{ session: MindSessionState; failureAnalysis?: string; hasNextRound: boolean }> {
-  const session = sessions.get(params.sessionId);
+  const session = loadSession(params.sessionId, params.token);
   if (!session || !session.prediction) throw new Error('Prediction session not found.');
 
   session.roundResults.push({
@@ -876,8 +909,8 @@ export async function recordPredictionFeedback(params: {
   return { session: toPublicState(session), failureAnalysis, hasNextRound };
 }
 
-export async function advanceNextRound(sessionId: string): Promise<MindSessionState> {
-  const session = sessions.get(sessionId);
+export async function advanceNextRound(sessionId: string, token?: unknown): Promise<MindSessionState> {
+  const session = loadSession(sessionId, token);
   if (!session) throw new Error('Session not found.');
   if (session.roundIndex >= session.totalRounds) throw new Error('All challenge rounds are already completed.');
 
@@ -895,6 +928,6 @@ export async function advanceNextRound(sessionId: string): Promise<MindSessionSt
   return toPublicState(session);
 }
 
-export function getMindSession(sessionId: string): InternalMindSession | undefined {
-  return sessions.get(sessionId);
+export function getMindSession(sessionId: string, token?: unknown): InternalMindSession | undefined {
+  return loadSession(sessionId, token);
 }
