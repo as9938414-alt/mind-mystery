@@ -453,7 +453,7 @@ async function runGeminiMindStep(session: InternalMindSession, isInitial: boolea
   const catId = session.resolvedCategory;
   const catDef = PREDICTION_CATEGORIES.find((c) => c.id === catId)!;
   const seeds = CANDIDATE_SEEDS[catId] ?? [];
-  const corrections = getLearnedCorrectionsForCategory(catId);
+  const corrections = await getLearnedCorrectionsForCategory(catId).catch(() => []);
 
   const qNum = session.questionCount + 1;
   const forceReveal = session.questionCount >= session.maxQuestions;
@@ -894,7 +894,7 @@ export async function recordPredictionFeedback(params: {
       failureAnalysis = `Noted “${actual}” — the engine will remember this pattern for future players.`;
     }
 
-    saveLearnedCorrection({
+    await saveLearnedCorrection({
       category: session.resolvedCategory,
       qaSummary: qaSummary.slice(0, 500),
       predictedGuess: session.prediction.guess,

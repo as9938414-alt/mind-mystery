@@ -1,4 +1,3 @@
-import { ThinkingLevel, Type } from '@google/genai';
 import {
   RIDDLE_CATEGORIES,
   RiddleCategoryId,
@@ -6,7 +5,6 @@ import {
   RiddleEvaluation,
   RiddleQuestion,
 } from '../src/types.ts';
-import { generateStructuredJson } from './gemini.ts';
 import { RIDDLE_BANK } from './riddleBank.ts';
 import { open, seal } from './sealedState.ts';
 import { recordRiddleResult } from './storage.ts';
@@ -52,21 +50,6 @@ const DIFFICULTY_META: Record<RiddleDifficulty, { basePoints: number; timeLimitS
   Hard: { basePoints: 50, timeLimitSeconds: 50 },
 };
 
-const RIDDLE_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    subtopic: { type: Type.STRING },
-    question: { type: Type.STRING },
-    options: {
-      type: Type.ARRAY,
-      items: { type: Type.STRING },
-    },
-    correctIndex: { type: Type.INTEGER, description: '0-based index (0 to 3) of the single verified correct option.' },
-    hint: { type: Type.STRING },
-    explanation: { type: Type.STRING },
-  },
-  required: ['subtopic', 'question', 'options', 'correctIndex', 'hint', 'explanation'],
-};
 
 export async function generateRiddle(params: {
   category: RiddleCategoryId;
@@ -77,36 +60,9 @@ export async function generateRiddle(params: {
   const difficulty: RiddleDifficulty = DIFFICULTY_META[params.difficulty] ? params.difficulty : 'Medium';
   const meta = DIFFICULTY_META[difficulty];
   const randomTopic = cat.topics[Math.floor(Math.random() * cat.topics.length)];
-  const excludes = (params.excludeQuestions ?? []).slice(-12);
-
-  const systemInstruction = `You are the question master for MINDMYSTERY's "The Brain Arena".
-Generate ONE high-quality, engaging, factually accurate riddle or brain challenge with 4 distinct multiple-choice options.
-Rules:
-1. Domain: ${cat.name} (topics: ${cat.topics.join(', ')}). Focus on "${randomTopic}".
-2. Difficulty: ${difficulty}.
-3. For Politics & Governance and General Knowledge: Use verified, factual, and strictly politically neutral information. Never take partisan stances.
-4. Ensure exactly ONE unambiguously correct option among the 4 choices (correctIndex 0..3).
-5. Provide a clever, non-spoiler hint and a clear 1–2 sentence factual explanation.
-6. NEVER repeat any question listed in the excluded list.`;
-
-  const prompt = `Create a fresh ${difficulty} challenge in "${cat.name}" (focus area: ${randomTopic}).
-${excludes.length > 0 ? `Do NOT repeat or closely paraphrase these already-asked questions:\n${excludes.map((q) => `- ${q}`).join('\n')}` : ''}`;
-
-  let data: RiddleData;
-  try {
-    data = await generateStructuredJson<RiddleData>({
-      systemInstruction,
-      prompt,
-      schema: RIDDLE_SCHEMA,
-      thinkingLevel: ThinkingLevel.LOW,
-    });
-    if (!data?.question || !Array.isArray(data.options) || data.options.length < 4) {
-      throw new Error('Incomplete riddle from AI');
-    }
-  } catch {
-    // Offline / quota / bad output: fall back to the hand-checked bank so the booth never stalls.
-    data = pickBankRiddle(cat.id, params.excludeQuestions ?? []);
-  }
+  // Verified riddles only: every answer in the bank was checked by hand, so the Arena can never
+  // mark a correct answer wrong. (AI-written riddles can contain false "facts".)
+  const data = pickBankRiddle(cat.id, params.excludeQuestions ?? []);
 
   const safeOptions = (data.options ?? []).slice(0, 4);
   while (safeOptions.length < 4) {
@@ -146,7 +102,7 @@ ${excludes.length > 0 ? `Do NOT repeat or closely paraphrase these already-asked
   };
 }
 
-export function evaluateRiddleAnswer(params: {
+export async function evaluateRiddleAnswer(params: {
   riddleId: string;
   userId: string;
   selectedIndex: number | null;
@@ -154,7 +110,7 @@ export function evaluateRiddleAnswer(params: {
   secondsRemaining: number;
   timedOut?: boolean;
   token?: unknown;
-}): RiddleEvaluation & { userStats: ReturnType<typeof recordRiddleResult>['user'] } {
+}): Promise<RiddleEvaluation & { userStats: Awaited<ReturnType<typeof recordRiddleResult>>['user'] }> {
   let riddle = activeRiddles.get(params.riddleId);
   if (!riddle && !answeredRiddles.has(params.riddleId)) {
     // Serverless: the riddle may have been issued by another instance — reopen it from the sealed token.
@@ -177,7 +133,7 @@ export function evaluateRiddleAnswer(params: {
     pointsAwarded = Math.max(10, riddle.basePoints + timeBonus - hintPenalty);
   }
 
-  const { user, newBadges } = recordRiddleResult({
+  const { user, newBadges } = await recordRiddleResult({
     userId: params.userId,
     category: riddle.category,
     subtopic: riddle.subtopic,

@@ -11,7 +11,13 @@ import {
 } from './mindEngine.ts';
 import { oracleStats } from './oracle/pools.ts';
 import { evaluateRiddleAnswer, generateRiddle } from './riddleEngine.ts';
-import { getLeaderboard, getOrCreateUser, recordMindReaderResult, updateUserProfile } from './storage.ts';
+import {
+  getLeaderboard,
+  getOrCreateUser,
+  recordMindReaderResult,
+  storageBackendName,
+  updateUserProfile,
+} from './storage.ts';
 
 /**
  * The MindMystery API as a standalone Express app. Used by server.ts (local / booth) and by the
@@ -35,31 +41,41 @@ export function createApp() {
       aiReachable: health.reachable,
       aiMessage: health.message,
       oracleCandidates: oracleStats().candidates,
+      storage: storageBackendName(),
       model: GEMINI_MODEL,
     });
   });
 
   // User Profile
-  api.get('/profile', (req: Request, res: Response) => {
-    const userId = String(req.query.userId || 'default_challenger');
-    const user = getOrCreateUser(userId);
-    res.json({ user });
+  api.get('/profile', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = String(req.query.userId || 'default_challenger');
+      res.json({ user: await getOrCreateUser(userId) });
+    } catch (err) {
+      next(err);
+    }
   });
 
-  api.patch('/profile', (req: Request, res: Response) => {
-    const { userId = 'default_challenger', name, avatarAccent } = req.body ?? {};
-    const user = updateUserProfile(String(userId), { name, avatarAccent });
-    res.json({ user });
+  api.patch('/profile', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId = 'default_challenger', name, avatarAccent } = req.body ?? {};
+      res.json({ user: await updateUserProfile(String(userId), { name, avatarAccent }) });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // Leaderboard
-  api.get('/leaderboard', (req: Request, res: Response) => {
-    const timeframeParam = String(req.query.timeframe || 'alltime');
-    const timeframe =
-      timeframeParam === 'daily' || timeframeParam === 'weekly' ? timeframeParam : 'alltime';
-    const userId = String(req.query.userId || 'default_challenger');
-    const entries = getLeaderboard(timeframe, userId);
-    res.json({ timeframe, entries });
+  api.get('/leaderboard', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const timeframeParam = String(req.query.timeframe || 'alltime');
+      const timeframe =
+        timeframeParam === 'daily' || timeframeParam === 'weekly' ? timeframeParam : 'alltime';
+      const userId = String(req.query.userId || 'default_challenger');
+      res.json({ timeframe, entries: await getLeaderboard(timeframe, userId) });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // Mind Reader Engine
@@ -129,7 +145,7 @@ export function createApp() {
       scoredRounds.add(roundKey);
       if (scoredRounds.size > 20_000) scoredRounds.clear();
 
-      const statsOutcome = recordMindReaderResult({
+      const statsOutcome = await recordMindReaderResult({
         userId: String(userId),
         category: resolvedCat,
         guess: predSnapshot.guess,
@@ -193,7 +209,7 @@ export function createApp() {
     }
   });
 
-  api.post('/riddles/answer', (req: Request, res: Response, next: NextFunction) => {
+  api.post('/riddles/answer', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const {
         riddleId,
@@ -210,7 +226,7 @@ export function createApp() {
         return;
       }
 
-      const result = evaluateRiddleAnswer({
+      const result = await evaluateRiddleAnswer({
         riddleId: String(riddleId),
         userId: String(userId),
         selectedIndex: typeof selectedIndex === 'number' ? selectedIndex : null,

@@ -970,21 +970,3 @@ export function selectNextBestQuestion(params: {
   return best;
 }
 
-export function getAllowedAttributesMap(candidates: CandidateRecord[]): Record<string, string[]> {
-  const skip = new Set(['keywords', 'hex', 'num_value', 'month_num', 'day_num', 'doy']);
-  const map: Record<string, Set<string>> = {};
-  for (const c of candidates) {
-    for (const [k, v] of Object.entries(c.attributes)) {
-      if (skip.has(k) || v === null || v === undefined) continue;
-      if (!map[k]) map[k] = new Set();
-      map[k].add(String(v));
-    }
-  }
-  const out: Record<string, string[]> = {};
-  for (const [k, set] of Object.entries(map)) {
-    if (set.size >= 2 && set.size <= 12) {
-      out[k] = Array.from(set);
-    }
-  }
-  return out;
-}

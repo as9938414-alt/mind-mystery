@@ -34,6 +34,9 @@ No internet is required for any of the above. The dot in the top bar shows **Off
 - Games run on serverless functions. Each response carries the game state as an encrypted token
   (`server/sealedState.ts`), so a game survives requests landing on different instances.
   `SESSION_SECRET` is set in the Vercel project; keep it set.
-- On Vercel the leaderboard lives in temporary per-instance storage and can reset. For a leaderboard
-  that persists, run the booth laptop locally (`npm run booth`) or add a database (e.g. Upstash Redis).
-- Optional: add `GEMINI_API_KEY` / `TMDB_API_KEY` in the Vercel project settings, then redeploy.
+- Leaderboard: connect **Upstash for Redis** (free) in the Vercel dashboard → project → Storage, then
+  redeploy. The app detects it automatically (`/api/health` shows `"storage":"redis"`). Without it,
+  Vercel scores are temporary; the local laptop always keeps them in `data/mindmystery-db.json`.
+- AI is off by default. To switch on the AI rescue, add `GEMINI_API_KEY` in the project's environment
+  variables and redeploy — no code changes needed.
+- Brain Arena uses only hand-checked riddles (93), never AI-written ones.

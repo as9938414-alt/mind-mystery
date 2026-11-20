@@ -1,6 +1,0 @@
-{
-  "name": "MindMystery",
-  "description": "Your Thoughts. Our Intelligence. One Mysterious Game. An AI-powered Mind Reader and Brain Challenge application.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

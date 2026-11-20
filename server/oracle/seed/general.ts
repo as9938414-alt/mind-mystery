@@ -365,50 +365,6 @@ export const WEATHER_CANDIDATES: CandidateRecord[] = RAW_WEATHER.map((w) => ({
   },
 }));
 
-// ==================== ALPHABET (Complete 26 letters A–Z) ====================
-const VOWELS = new Set(['A', 'E', 'I', 'O', 'U']);
-const CURVED_ONLY = new Set(['C', 'O', 'S', 'U']);
-const STRAIGHT_ONLY = new Set(['A', 'E', 'F', 'H', 'I', 'K', 'L', 'M', 'N', 'T', 'V', 'W', 'X', 'Y', 'Z']);
-const SYMMETRIC_V = new Set(['A', 'H', 'I', 'M', 'O', 'T', 'U', 'V', 'W', 'X', 'Y']);
-const SYMMETRIC_H = new Set(['B', 'C', 'D', 'E', 'H', 'I', 'K', 'O', 'X']);
-const COMMON_LETTERS = new Set(['E', 'T', 'A', 'O', 'I', 'N', 'S', 'H', 'R', 'D', 'L', 'C']);
-
-export const ALPHABET_CANDIDATES: CandidateRecord[] = Array.from({ length: 26 }, (_, idx) => {
-  const pos = idx + 1;
-  const ch = String.fromCharCode(65 + idx);
-  const half = pos <= 13 ? 'first_half' : 'second_half';
-  const quarter = pos <= 6 ? 'A_F' : pos <= 13 ? 'G_M' : pos <= 19 ? 'N_S' : 'T_Z';
-  const shape = CURVED_ONLY.has(ch) ? 'curved' : STRAIGHT_ONLY.has(ch) ? 'straight' : 'mixed';
-  const subHalf = pos <= 13 ? (pos <= 7 ? 'early' : 'late') : pos <= 20 ? 'early' : 'late';
-
-  return {
-    id: `alphabet_${ch.toLowerCase()}`,
-    category: 'alphabet',
-    industry: null,
-    name: `Letter ${ch}`,
-    subtitle: `Position #${pos} in the English alphabet · ${VOWELS.has(ch) ? 'Vowel' : 'Consonant'}`,
-    releaseYear: null,
-    endYear: null,
-    decade: null,
-    era: null,
-    popularityPrior: 1.0,
-    verified: true,
-    attributes: {
-      half,
-      quarter,
-      sub_half: subHalf,
-      letter_type: VOWELS.has(ch) ? 'vowel' : 'consonant',
-      shape,
-      symmetric_vertical: SYMMETRIC_V.has(ch) ? 'yes' : 'no',
-      symmetric_horizontal: SYMMETRIC_H.has(ch) ? 'yes' : 'no',
-      position_parity: pos % 2 === 0 ? 'even' : 'odd',
-      mod3: pos % 3 === 0 ? 'div3' : pos % 3 === 1 ? 'rem1' : 'rem2',
-      common_english: COMMON_LETTERS.has(ch) ? 'yes' : 'no',
-      keywords: ch.toLowerCase(),
-    },
-  };
-});
-
 // ==================== WORD (44 everyday vocabulary words) ====================
 interface WordSeed {
   name: string;

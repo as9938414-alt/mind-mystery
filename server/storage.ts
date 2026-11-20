@@ -1,3 +1,4 @@
+import { Redis } from '@upstash/redis';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -7,6 +8,16 @@ import {
   RiddleCategoryId,
   UserStats,
 } from '../src/types.ts';
+
+/**
+ * Player profiles, leaderboard and learned corrections.
+ *
+ * Two interchangeable backends:
+ *  - Upstash Redis — used automatically when UPSTASH_REDIS_REST_URL/TOKEN (or Vercel's
+ *    KV_REST_API_URL/TOKEN) are set. Persistent and shared by every serverless instance.
+ *    One key per player, scores in sorted sets, so simultaneous players never overwrite each other.
+ *  - A JSON file (data/mindmystery-db.json) — for the local booth laptop.
+ */
 
 export interface LearnedCorrection {
   id: string;
@@ -18,40 +29,26 @@ export interface LearnedCorrection {
   createdAt: string;
 }
 
-interface StoredDb {
-  users: Record<string, UserStats>;
-  leaderboard: Record<
-    string,
-    {
-      userId: string;
-      name: string;
-      avatarAccent: string;
-      dailyPoints: number;
-      weeklyPoints: number;
-      allTimePoints: number;
-      correctPredictions: number;
-      riddlesSolved: number;
-      currentStreak: number;
-      lastDailyReset: string;
-      lastWeeklyReset: string;
-    }
-  >;
-  learnedCorrections: LearnedCorrection[];
+type Board = 'alltime' | 'daily' | 'weekly';
+
+interface StorageBackend {
+  readonly name: 'redis' | 'file';
+  getUser(id: string): Promise<UserStats | null>;
+  getUsers(ids: string[]): Promise<Array<UserStats | null>>;
+  putUser(user: UserStats): Promise<void>;
+  /** Adds points to the daily and weekly boards and sets the all-time score. */
+  addScore(userId: string, delta: number, allTime: number): Promise<void>;
+  top(board: Board, n: number): Promise<Array<{ id: string; score: number }>>;
+  scores(userIds: string[]): Promise<Array<{ daily: number; weekly: number; alltime: number }>>;
+  pushCorrection(c: LearnedCorrection): Promise<void>;
+  listCorrections(): Promise<LearnedCorrection[]>;
 }
 
-// Serverless hosts have a read-only filesystem except /tmp (which is per-instance and temporary).
-const DATA_DIR = process.env.MINDMYSTERY_DATA_DIR
-  ? path.resolve(process.env.MINDMYSTERY_DATA_DIR)
-  : process.env.VERCEL
-    ? '/tmp/mindmystery-data'
-    : path.resolve(process.cwd(), 'data');
-const DB_PATH = path.join(DATA_DIR, 'mindmystery-db.json');
-
-function getDayKey(date = new Date()): string {
+function dayKey(date = new Date()): string {
   return date.toISOString().slice(0, 10);
 }
 
-function getWeekKey(date = new Date()): string {
+function weekKey(date = new Date()): string {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   const dayNum = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
@@ -60,111 +57,231 @@ function getWeekKey(date = new Date()): string {
   return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
 }
 
-function createInitialDb(): StoredDb {
-  // Leaderboard starts empty so it only ever shows real players (no fake seed data at a live event).
+/* ------------------------------- Redis ------------------------------- */
+
+class RedisBackend implements StorageBackend {
+  readonly name = 'redis' as const;
+  constructor(private redis: Redis) {}
+
+  private userKey = (id: string) => `mm:user:${id}`;
+  private boardKey(board: Board): string {
+    if (board === 'daily') return `mm:lb:day:${dayKey()}`;
+    if (board === 'weekly') return `mm:lb:week:${weekKey()}`;
+    return 'mm:lb:alltime';
+  }
+
+  async getUser(id: string) {
+    return (await this.redis.get<UserStats>(this.userKey(id))) ?? null;
+  }
+  async getUsers(ids: string[]) {
+    if (ids.length === 0) return [];
+    const rows = await this.redis.mget<Array<UserStats | null>>(...ids.map(this.userKey));
+    return rows.map((r) => r ?? null);
+  }
+  async putUser(user: UserStats) {
+    await this.redis.set(this.userKey(user.userId), user);
+  }
+  async addScore(userId: string, delta: number, allTime: number) {
+    const p = this.redis.pipeline();
+    const day = this.boardKey('daily');
+    const week = this.boardKey('weekly');
+    p.zincrby(day, delta, userId);
+    p.expire(day, 60 * 60 * 24 * 3);
+    p.zincrby(week, delta, userId);
+    p.expire(week, 60 * 60 * 24 * 15);
+    p.zadd('mm:lb:alltime', { score: allTime, member: userId });
+    await p.exec();
+  }
+  async top(board: Board, n: number) {
+    const raw = await this.redis.zrange<Array<string | number>>(this.boardKey(board), 0, n - 1, {
+      rev: true,
+      withScores: true,
+    });
+    const out: Array<{ id: string; score: number }> = [];
+    for (let i = 0; i + 1 < raw.length; i += 2) out.push({ id: String(raw[i]), score: Number(raw[i + 1]) });
+    return out;
+  }
+  async scores(userIds: string[]) {
+    if (userIds.length === 0) return [];
+    const p = this.redis.pipeline();
+    for (const id of userIds) {
+      p.zscore(this.boardKey('daily'), id);
+      p.zscore(this.boardKey('weekly'), id);
+      p.zscore(this.boardKey('alltime'), id);
+    }
+    const res = (await p.exec()) as Array<number | string | null>;
+    return userIds.map((_, i) => ({
+      daily: Number(res[i * 3] ?? 0),
+      weekly: Number(res[i * 3 + 1] ?? 0),
+      alltime: Number(res[i * 3 + 2] ?? 0),
+    }));
+  }
+  async pushCorrection(c: LearnedCorrection) {
+    const p = this.redis.pipeline();
+    p.lpush('mm:corrections', c);
+    p.ltrim('mm:corrections', 0, 99);
+    await p.exec();
+  }
+  async listCorrections() {
+    return (await this.redis.lrange<LearnedCorrection>('mm:corrections', 0, 99)) ?? [];
+  }
+}
+
+/* ------------------------------- File -------------------------------- */
+
+interface FileDb {
+  users: Record<string, UserStats>;
+  boards: { alltime: Record<string, number>; daily: Record<string, Record<string, number>>; weekly: Record<string, Record<string, number>> };
+  learnedCorrections: LearnedCorrection[];
+}
+
+class FileBackend implements StorageBackend {
+  readonly name = 'file' as const;
+  private db: FileDb | null = null;
+  private readonly dir: string;
+  private readonly file: string;
+
+  constructor() {
+    // Serverless hosts only allow writes to /tmp (temporary) — Redis is the right choice there.
+    this.dir = process.env.MINDMYSTERY_DATA_DIR
+      ? path.resolve(process.env.MINDMYSTERY_DATA_DIR)
+      : process.env.VERCEL
+        ? '/tmp/mindmystery-data'
+        : path.resolve(process.cwd(), 'data');
+    this.file = path.join(this.dir, 'mindmystery-db.json');
+  }
+
+  private load(): FileDb {
+    if (this.db) return this.db;
+    const empty: FileDb = { users: {}, boards: { alltime: {}, daily: {}, weekly: {} }, learnedCorrections: [] };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.file, 'utf-8'));
+      // Older files (before the storage rewrite) have no `boards` — start the boards fresh.
+      this.db = parsed && parsed.boards ? parsed : { ...empty, users: parsed?.users ?? {} };
+    } catch {
+      this.db = empty;
+    }
+    return this.db!;
+  }
+  private save() {
+    try {
+      fs.mkdirSync(this.dir, { recursive: true });
+      const tmp = `${this.file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.db, null, 2), 'utf-8');
+      fs.renameSync(tmp, this.file);
+    } catch (err) {
+      console.warn('[MindMystery] Could not persist data:', err instanceof Error ? err.message : err);
+    }
+  }
+  private board(board: Board): Record<string, number> {
+    const db = this.load();
+    if (board === 'alltime') return db.boards.alltime;
+    const key = board === 'daily' ? dayKey() : weekKey();
+    const group = board === 'daily' ? db.boards.daily : db.boards.weekly;
+    // Keep only the current period so the file never grows without bound.
+    for (const k of Object.keys(group)) if (k !== key) delete group[k];
+    return (group[key] ??= {});
+  }
+
+  async getUser(id: string) {
+    return this.load().users[id] ?? null;
+  }
+  async getUsers(ids: string[]) {
+    const db = this.load();
+    return ids.map((id) => db.users[id] ?? null);
+  }
+  async putUser(user: UserStats) {
+    this.load().users[user.userId] = user;
+    this.save();
+  }
+  async addScore(userId: string, delta: number, allTime: number) {
+    const daily = this.board('daily');
+    const weekly = this.board('weekly');
+    daily[userId] = (daily[userId] ?? 0) + delta;
+    weekly[userId] = (weekly[userId] ?? 0) + delta;
+    this.board('alltime')[userId] = allTime;
+    this.save();
+  }
+  async top(board: Board, n: number) {
+    return Object.entries(this.board(board))
+      .map(([id, score]) => ({ id, score }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, n);
+  }
+  async scores(userIds: string[]) {
+    const d = this.board('daily');
+    const w = this.board('weekly');
+    const a = this.board('alltime');
+    return userIds.map((id) => ({ daily: d[id] ?? 0, weekly: w[id] ?? 0, alltime: a[id] ?? 0 }));
+  }
+  async pushCorrection(c: LearnedCorrection) {
+    const db = this.load();
+    db.learnedCorrections = [c, ...db.learnedCorrections].slice(0, 100);
+    this.save();
+  }
+  async listCorrections() {
+    return this.load().learnedCorrections;
+  }
+}
+
+/* ------------------------------ Selection ---------------------------- */
+
+function createBackend(): StorageBackend {
+  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+  if (url && token) return new RedisBackend(new Redis({ url, token }));
+  return new FileBackend();
+}
+
+const backend = createBackend();
+
+export function storageBackendName(): 'redis' | 'file' {
+  return backend.name;
+}
+
+/* ------------------------------ Game logic --------------------------- */
+
+function cleanUserId(userId: string): string {
+  return userId.trim().replace(/[^\w-]/g, '').slice(0, 64) || 'default_challenger';
+}
+
+function newUser(id: string): UserStats {
   return {
-    users: {},
-    leaderboard: {},
-    learnedCorrections: [],
+    userId: id,
+    name: 'Mind Challenger',
+    avatarAccent: '#6366F1',
+    gamesPlayed: 0,
+    successfulGuesses: 0,
+    riddlesSolved: 0,
+    riddlesAttempted: 0,
+    totalPoints: 0,
+    currentStreak: 0,
+    bestStreak: 0,
+    badges: [],
+    solvedRiddleCategories: [],
+    categoryStats: {},
+    recentActivity: [],
   };
 }
 
-let dbCache: StoredDb | null = null;
-
-function loadDb(): StoredDb {
-  if (dbCache) return dbCache;
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  } catch {
-    /* read-only filesystem — run in memory */
-  }
-  if (!fs.existsSync(DB_PATH)) {
-    dbCache = createInitialDb();
-    saveDb(dbCache);
-    return dbCache;
-  }
-  try {
-    const raw = fs.readFileSync(DB_PATH, 'utf-8');
-    dbCache = JSON.parse(raw) as StoredDb;
-  } catch {
-    dbCache = createInitialDb();
-    saveDb(dbCache);
-  }
-  return dbCache;
+/** Returns the player's profile. New visitors get a default profile that is only saved once they score. */
+export async function getOrCreateUser(userId: string): Promise<UserStats> {
+  const id = cleanUserId(userId);
+  return (await backend.getUser(id)) ?? newUser(id);
 }
 
-function saveDb(db: StoredDb): void {
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    const tmpPath = `${DB_PATH}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2), 'utf-8');
-    fs.renameSync(tmpPath, DB_PATH);
-  } catch (err) {
-    // Never fail a game because the disk is unavailable; the in-memory copy keeps working.
-    console.warn('[MindMystery] Could not persist data:', err instanceof Error ? err.message : err);
-  }
-}
-
-export function getOrCreateUser(userId: string): UserStats {
-  const db = loadDb();
-  const cleanId = userId.trim().slice(0, 64) || 'default_challenger';
-  if (!db.users[cleanId]) {
-    const newUser: UserStats = {
-      userId: cleanId,
-      name: 'Mind Challenger',
-      avatarAccent: '#6366F1',
-      gamesPlayed: 0,
-      successfulGuesses: 0,
-      riddlesSolved: 0,
-      riddlesAttempted: 0,
-      totalPoints: 0,
-      currentStreak: 0,
-      bestStreak: 0,
-      badges: [],
-      solvedRiddleCategories: [],
-      categoryStats: {},
-      recentActivity: [],
-    };
-    db.users[cleanId] = newUser;
-    const today = getDayKey();
-    const week = getWeekKey();
-    db.leaderboard[cleanId] = {
-      userId: cleanId,
-      name: newUser.name,
-      avatarAccent: newUser.avatarAccent,
-      dailyPoints: 0,
-      weeklyPoints: 0,
-      allTimePoints: 0,
-      correctPredictions: 0,
-      riddlesSolved: 0,
-      currentStreak: 0,
-      lastDailyReset: today,
-      lastWeeklyReset: week,
-    };
-    saveDb(db);
-  }
-  return db.users[cleanId];
-}
-
-export function updateUserProfile(
+export async function updateUserProfile(
   userId: string,
   updates: { name?: string; avatarAccent?: string }
-): UserStats {
-  const db = loadDb();
-  const user = getOrCreateUser(userId);
+): Promise<UserStats> {
+  const user = await getOrCreateUser(userId);
   if (typeof updates.name === 'string' && updates.name.trim()) {
     user.name = updates.name.trim().slice(0, 32);
   }
   if (typeof updates.avatarAccent === 'string' && /^#[0-9A-Fa-f]{6}$/.test(updates.avatarAccent)) {
     user.avatarAccent = updates.avatarAccent;
   }
-  if (db.leaderboard[user.userId]) {
-    db.leaderboard[user.userId].name = user.name;
-    db.leaderboard[user.userId].avatarAccent = user.avatarAccent;
-  }
-  saveDb(db);
+  await backend.putUser(user);
   return user;
 }
 
@@ -176,87 +293,45 @@ function evaluateBadges(user: UserStats, latestConfidence?: number, latestGuessC
       unlockedNow.push(badgeId);
     }
   };
-
   if (user.successfulGuesses >= 1) add('first_mind_read');
   if (user.successfulGuesses >= 5) add('mind_master');
   if (user.solvedRiddleCategories.length >= 3) add('brain_explorer');
   if (user.riddlesSolved >= 10) add('riddle_champion');
   if (latestGuessCorrect && (latestConfidence ?? 0) >= 85) add('perfect_prediction');
   if (user.gamesPlayed + user.riddlesAttempted >= 10) add('ten_games');
-
   return unlockedNow;
 }
 
-function syncLeaderboardPoints(db: StoredDb, user: UserStats, pointsDelta: number): void {
-  const today = getDayKey();
-  const week = getWeekKey();
-  let row = db.leaderboard[user.userId];
-  if (!row) {
-    row = {
-      userId: user.userId,
-      name: user.name,
-      avatarAccent: user.avatarAccent,
-      dailyPoints: 0,
-      weeklyPoints: 0,
-      allTimePoints: 0,
-      correctPredictions: 0,
-      riddlesSolved: 0,
-      currentStreak: 0,
-      lastDailyReset: today,
-      lastWeeklyReset: week,
-    };
-    db.leaderboard[user.userId] = row;
-  }
-
-  if (row.lastDailyReset !== today) {
-    row.dailyPoints = 0;
-    row.lastDailyReset = today;
-  }
-  if (row.lastWeeklyReset !== week) {
-    row.weeklyPoints = 0;
-    row.lastWeeklyReset = week;
-  }
-
-  row.name = user.name;
-  row.avatarAccent = user.avatarAccent;
-  row.dailyPoints += pointsDelta;
-  row.weeklyPoints += pointsDelta;
-  row.allTimePoints = user.totalPoints;
-  row.correctPredictions = user.successfulGuesses;
-  row.riddlesSolved = user.riddlesSolved;
-  row.currentStreak = user.currentStreak;
+async function commit(user: UserStats, pointsDelta: number) {
+  user.recentActivity = user.recentActivity.slice(0, 20);
+  await backend.putUser(user);
+  await backend.addScore(user.userId, pointsDelta, user.totalPoints);
 }
 
-export function recordMindReaderResult(params: {
+export async function recordMindReaderResult(params: {
   userId: string;
   category: PredictionCategoryId;
   guess: string;
   confidence: number;
   correct: boolean;
-}): { user: UserStats; pointsAwarded: number; newBadges: string[] } {
-  const db = loadDb();
-  const user = getOrCreateUser(params.userId);
-
+}): Promise<{ user: UserStats; pointsAwarded: number; newBadges: string[] }> {
+  const user = await getOrCreateUser(params.userId);
   user.gamesPlayed += 1;
-  if (!user.categoryStats[params.category]) {
-    user.categoryStats[params.category] = { played: 0, guessed: 0 };
-  }
-  user.categoryStats[params.category]!.played += 1;
+  const stats = (user.categoryStats[params.category] ??= { played: 0, guessed: 0 });
+  stats.played += 1;
 
-  let pointsAwarded = 15; // Participation points
+  let pointsAwarded = 15; // participation
   if (params.correct) {
     user.successfulGuesses += 1;
     user.currentStreak += 1;
     user.bestStreak = Math.max(user.bestStreak, user.currentStreak);
-    user.categoryStats[params.category]!.guessed += 1;
+    stats.guessed += 1;
     pointsAwarded = 50 + Math.round(params.confidence * 0.25);
   } else {
     user.currentStreak = 0;
   }
-
   user.totalPoints += pointsAwarded;
   const newBadges = evaluateBadges(user, params.confidence, params.correct);
-
   user.recentActivity.unshift({
     id: `act_${Date.now()}`,
     type: 'mind_reader',
@@ -266,39 +341,29 @@ export function recordMindReaderResult(params: {
     success: params.correct,
     timestamp: new Date().toISOString(),
   });
-  user.recentActivity = user.recentActivity.slice(0, 20);
-
-  syncLeaderboardPoints(db, user, pointsAwarded);
-  saveDb(db);
-
+  await commit(user, pointsAwarded);
   return { user, pointsAwarded, newBadges };
 }
 
-export function recordRiddleResult(params: {
+export async function recordRiddleResult(params: {
   userId: string;
   category: RiddleCategoryId;
   subtopic: string;
   correct: boolean;
   pointsAwarded: number;
-}): { user: UserStats; newBadges: string[] } {
-  const db = loadDb();
-  const user = getOrCreateUser(params.userId);
-
+}): Promise<{ user: UserStats; newBadges: string[] }> {
+  const user = await getOrCreateUser(params.userId);
   user.riddlesAttempted += 1;
   if (params.correct) {
     user.riddlesSolved += 1;
     user.currentStreak += 1;
     user.bestStreak = Math.max(user.bestStreak, user.currentStreak);
-    if (!user.solvedRiddleCategories.includes(params.category)) {
-      user.solvedRiddleCategories.push(params.category);
-    }
+    if (!user.solvedRiddleCategories.includes(params.category)) user.solvedRiddleCategories.push(params.category);
   } else {
     user.currentStreak = 0;
   }
-
   user.totalPoints += params.pointsAwarded;
   const newBadges = evaluateBadges(user);
-
   user.recentActivity.unshift({
     id: `act_${Date.now()}`,
     type: 'riddle',
@@ -308,62 +373,52 @@ export function recordRiddleResult(params: {
     success: params.correct,
     timestamp: new Date().toISOString(),
   });
-  user.recentActivity = user.recentActivity.slice(0, 20);
-
-  syncLeaderboardPoints(db, user, params.pointsAwarded);
-  saveDb(db);
-
+  await commit(user, params.pointsAwarded);
   return { user, newBadges };
 }
 
-export function saveLearnedCorrection(correction: Omit<LearnedCorrection, 'id' | 'createdAt'>): void {
-  const db = loadDb();
-  db.learnedCorrections.unshift({
+export async function saveLearnedCorrection(correction: Omit<LearnedCorrection, 'id' | 'createdAt'>): Promise<void> {
+  await backend.pushCorrection({
     ...correction,
     id: `corr_${Date.now()}`,
     createdAt: new Date().toISOString(),
   });
-  db.learnedCorrections = db.learnedCorrections.slice(0, 100);
-  saveDb(db);
 }
 
-export function getLearnedCorrectionsForCategory(category: PredictionCategoryId): LearnedCorrection[] {
-  const db = loadDb();
-  return db.learnedCorrections.filter((c) => c.category === category).slice(0, 12);
+export async function getLearnedCorrectionsForCategory(category: PredictionCategoryId): Promise<LearnedCorrection[]> {
+  const all = await backend.listCorrections();
+  return all.filter((c) => c.category === category).slice(0, 12);
 }
 
-export function getLeaderboard(
+export async function getLeaderboard(
   timeframe: 'daily' | 'weekly' | 'alltime',
   currentUserId: string
-): LeaderboardEntry[] {
-  const db = loadDb();
-  getOrCreateUser(currentUserId);
-  const today = getDayKey();
-  const week = getWeekKey();
+): Promise<LeaderboardEntry[]> {
+  const me = cleanUserId(currentUserId);
+  const board: Board = timeframe === 'alltime' ? 'alltime' : timeframe;
+  const top = (await backend.top(board, 20)).filter((t) => t.score > 0);
+  const ids = top.map((t) => t.id);
+  if (!ids.includes(me)) ids.push(me);
 
-  const list: LeaderboardEntry[] = Object.values(db.leaderboard).map((row) => {
-    const daily = row.lastDailyReset === today ? row.dailyPoints : 0;
-    const weekly = row.lastWeeklyReset === week ? row.weeklyPoints : 0;
+  const [users, scores] = await Promise.all([backend.getUsers(ids), backend.scores(ids)]);
+  const rows: LeaderboardEntry[] = ids.map((id, i) => {
+    const u = users[i] ?? newUser(id);
     return {
-      userId: row.userId,
-      name: row.name,
-      avatarAccent: row.avatarAccent,
-      dailyPoints: daily,
-      weeklyPoints: weekly,
-      allTimePoints: row.allTimePoints,
-      correctPredictions: row.correctPredictions,
-      riddlesSolved: row.riddlesSolved,
-      currentStreak: row.currentStreak,
-      isCurrentUser: row.userId === currentUserId,
+      userId: id,
+      name: u.name,
+      avatarAccent: u.avatarAccent,
+      dailyPoints: scores[i].daily,
+      weeklyPoints: scores[i].weekly,
+      allTimePoints: scores[i].alltime,
+      correctPredictions: u.successfulGuesses,
+      riddlesSolved: u.riddlesSolved,
+      currentStreak: u.currentStreak,
+      isCurrentUser: id === me,
     };
   });
-
-  const visible = list.filter((e) => e.allTimePoints > 0 || e.isCurrentUser);
-  visible.sort((a, b) => {
-    if (timeframe === 'daily') return b.dailyPoints - a.dailyPoints || b.allTimePoints - a.allTimePoints;
-    if (timeframe === 'weekly') return b.weeklyPoints - a.weeklyPoints || b.allTimePoints - a.allTimePoints;
-    return b.allTimePoints - a.allTimePoints;
-  });
-
-  return visible.slice(0, 20);
+  const key = timeframe === 'daily' ? 'dailyPoints' : timeframe === 'weekly' ? 'weeklyPoints' : 'allTimePoints';
+  return rows
+    .filter((r) => r[key] > 0 || r.isCurrentUser)
+    .sort((a, b) => b[key] - a[key] || b.allTimePoints - a.allTimePoints)
+    .slice(0, 21);
 }
