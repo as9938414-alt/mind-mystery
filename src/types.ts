@@ -321,7 +321,7 @@ export interface MindSessionState {
 export interface HealthStatus {
   ok: boolean;
   oracleCandidates?: number;
-  storage?: 'redis' | 'file';
+  storage?: 'postgres' | 'redis' | 'file';
   aiConfigured: boolean;
   aiReachable: boolean | null;
   aiMessage?: string;

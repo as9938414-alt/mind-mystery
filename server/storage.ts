@@ -1,3 +1,4 @@
+import { neon } from '@neondatabase/serverless';
 import { Redis } from '@upstash/redis';
 import fs from 'fs';
 import path from 'path';
@@ -12,10 +13,10 @@ import {
 /**
  * Player profiles, leaderboard and learned corrections.
  *
- * Two interchangeable backends:
- *  - Upstash Redis — used automatically when UPSTASH_REDIS_REST_URL/TOKEN (or Vercel's
- *    KV_REST_API_URL/TOKEN) are set. Persistent and shared by every serverless instance.
- *    One key per player, scores in sorted sets, so simultaneous players never overwrite each other.
+ * Interchangeable backends, picked automatically from the environment:
+ *  - Postgres (Neon) — DATABASE_URL / POSTGRES_URL. Persistent and shared by every serverless
+ *    instance; scores are updated with atomic upserts, so simultaneous players never collide.
+ *  - Upstash Redis — UPSTASH_REDIS_REST_URL/TOKEN (or KV_REST_API_URL/TOKEN).
  *  - A JSON file (data/mindmystery-db.json) — for the local booth laptop.
  */
 
@@ -31,8 +32,8 @@ export interface LearnedCorrection {
 
 type Board = 'alltime' | 'daily' | 'weekly';
 
-interface StorageBackend {
-  readonly name: 'redis' | 'file';
+export interface StorageBackend {
+  readonly name: 'postgres' | 'redis' | 'file';
   getUser(id: string): Promise<UserStats | null>;
   getUsers(ids: string[]): Promise<Array<UserStats | null>>;
   putUser(user: UserStats): Promise<void>;
@@ -124,6 +125,126 @@ class RedisBackend implements StorageBackend {
   }
   async listCorrections() {
     return (await this.redis.lrange<LearnedCorrection>('mm:corrections', 0, 99)) ?? [];
+  }
+}
+
+/* ------------------------------ Postgres ----------------------------- */
+
+/** Runs one parameterised SQL statement and returns its rows (Neon over HTTPS in production). */
+export type SqlQuery = (text: string, params?: unknown[]) => Promise<Array<Record<string, unknown>>>;
+
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS mm_users (
+     id text PRIMARY KEY,
+     data jsonb NOT NULL,
+     updated_at timestamptz NOT NULL DEFAULT now()
+   )`,
+  `CREATE TABLE IF NOT EXISTS mm_scores (
+     board text NOT NULL,
+     user_id text NOT NULL,
+     score double precision NOT NULL DEFAULT 0,
+     updated_at timestamptz NOT NULL DEFAULT now(),
+     PRIMARY KEY (board, user_id)
+   )`,
+  `CREATE INDEX IF NOT EXISTS mm_scores_board_score ON mm_scores (board, score DESC)`,
+  `CREATE TABLE IF NOT EXISTS mm_corrections (
+     id text PRIMARY KEY,
+     category text NOT NULL,
+     data jsonb NOT NULL,
+     created_at timestamptz NOT NULL DEFAULT now()
+   )`,
+];
+
+export class PostgresBackend implements StorageBackend {
+  readonly name = 'postgres' as const;
+  private ready: Promise<void> | null = null;
+  constructor(private q: SqlQuery) {}
+
+  /** Creates the tables once per instance (idempotent). */
+  private init(): Promise<void> {
+    this.ready ??= (async () => {
+      for (const stmt of SCHEMA) await this.q(stmt);
+    })().catch((err) => {
+      this.ready = null; // retry on the next request
+      throw err;
+    });
+    return this.ready;
+  }
+  private boardKey(board: Board): string {
+    if (board === 'daily') return `day:${dayKey()}`;
+    if (board === 'weekly') return `week:${weekKey()}`;
+    return 'alltime';
+  }
+  private static parse<T>(v: unknown): T {
+    return (typeof v === 'string' ? JSON.parse(v) : v) as T;
+  }
+
+  async getUser(id: string) {
+    await this.init();
+    const rows = await this.q('SELECT data FROM mm_users WHERE id = $1', [id]);
+    return rows[0] ? PostgresBackend.parse<UserStats>(rows[0].data) : null;
+  }
+  async getUsers(ids: string[]) {
+    if (ids.length === 0) return [];
+    await this.init();
+    const rows = await this.q('SELECT id, data FROM mm_users WHERE id = ANY($1::text[])', [ids]);
+    const byId = new Map(rows.map((r) => [String(r.id), PostgresBackend.parse<UserStats>(r.data)]));
+    return ids.map((id) => byId.get(id) ?? null);
+  }
+  async putUser(user: UserStats) {
+    await this.init();
+    await this.q(
+      `INSERT INTO mm_users (id, data, updated_at) VALUES ($1, $2::jsonb, now())
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+      [user.userId, JSON.stringify(user)]
+    );
+  }
+  async addScore(userId: string, delta: number, allTime: number) {
+    await this.init();
+    // Daily/weekly add atomically (no lost updates); all-time is the player's authoritative total.
+    await this.q(
+      `INSERT INTO mm_scores (board, user_id, score, updated_at)
+       VALUES ($1, $3, $4, now()), ($2, $3, $4, now())
+       ON CONFLICT (board, user_id) DO UPDATE SET score = mm_scores.score + EXCLUDED.score, updated_at = now()`,
+      [this.boardKey('daily'), this.boardKey('weekly'), userId, delta]
+    );
+    await this.q(
+      `INSERT INTO mm_scores (board, user_id, score, updated_at) VALUES ('alltime', $1, $2, now())
+       ON CONFLICT (board, user_id) DO UPDATE SET score = EXCLUDED.score, updated_at = now()`,
+      [userId, allTime]
+    );
+  }
+  async top(board: Board, n: number) {
+    await this.init();
+    const rows = await this.q(
+      'SELECT user_id, score FROM mm_scores WHERE board = $1 ORDER BY score DESC, updated_at ASC LIMIT $2',
+      [this.boardKey(board), n]
+    );
+    return rows.map((r) => ({ id: String(r.user_id), score: Number(r.score) }));
+  }
+  async scores(userIds: string[]) {
+    if (userIds.length === 0) return [];
+    await this.init();
+    const boards = [this.boardKey('daily'), this.boardKey('weekly'), 'alltime'];
+    const rows = await this.q(
+      'SELECT board, user_id, score FROM mm_scores WHERE board = ANY($1::text[]) AND user_id = ANY($2::text[])',
+      [boards, userIds]
+    );
+    const get = (b: string, id: string) => Number(rows.find((r) => r.board === b && r.user_id === id)?.score ?? 0);
+    return userIds.map((id) => ({ daily: get(boards[0], id), weekly: get(boards[1], id), alltime: get('alltime', id) }));
+  }
+  async pushCorrection(c: LearnedCorrection) {
+    await this.init();
+    await this.q('INSERT INTO mm_corrections (id, category, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO NOTHING', [
+      c.id,
+      c.category,
+      JSON.stringify(c),
+    ]);
+  }
+  async listCorrections() {
+    await this.init();
+    const rows = await this.q('SELECT data FROM mm_corrections ORDER BY created_at DESC LIMIT 100');
+    return rows.map((r) => PostgresBackend.parse<LearnedCorrection>(r.data));
   }
 }
 
@@ -227,15 +348,25 @@ class FileBackend implements StorageBackend {
 /* ------------------------------ Selection ---------------------------- */
 
 function createBackend(): StorageBackend {
+  const pgUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+  if (pgUrl && /^postgres(ql)?:\/\//.test(pgUrl)) {
+    const sql = neon(pgUrl);
+    return new PostgresBackend((text, params) => sql.query(text, params ?? []) as Promise<Array<Record<string, unknown>>>);
+  }
   const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
   if (url && token) return new RedisBackend(new Redis({ url, token }));
   return new FileBackend();
 }
 
-const backend = createBackend();
+let backend: StorageBackend = createBackend();
 
-export function storageBackendName(): 'redis' | 'file' {
+/** Swap the storage backend (used by tests to run the Postgres code against an in-process database). */
+export function setStorageBackend(next: StorageBackend): void {
+  backend = next;
+}
+
+export function storageBackendName(): 'postgres' | 'redis' | 'file' {
   return backend.name;
 }
 
